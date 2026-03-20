@@ -124,6 +124,11 @@ class DraftEnrichmentService
             'enrichment_id' => $enrichment->id,
         ];
 
+        // Fix #2: Apply copy variants to actual ad payload
+        if ($enrichment->enrichment_type === DraftEnrichmentTypeEnum::COPY_VARIANTS->value) {
+            $currentPayload = $this->applyCopyToAds($currentPayload, $enrichment->payload_json);
+        }
+
         // Update draft
         $draft->update([
             'draft_payload_json' => $currentPayload,
@@ -138,5 +143,86 @@ class DraftEnrichmentService
             'enrichment_id' => $enrichment->id,
             'enrichment_key' => $enrichmentKey,
         ]);
+    }
+
+    /**
+     * Apply copy variants to ads in payload
+     * Fix #2: Map copy enrichment to actual ad creative structure
+     *
+     * @param array $payload
+     * @param array $copyData
+     * @return array
+     */
+    protected function applyCopyToAds(array $payload, array $copyData): array
+    {
+        $ads = $payload['ads'] ?? [];
+
+        if (empty($ads)) {
+            Log::warning('[DRAFT_ENRICHMENT] No ads found in payload to apply copy');
+            return $payload;
+        }
+
+        // Extract copy variants from enrichment payload
+        $primaryTexts = $copyData['primary_texts'] ?? [];
+        $headlines = $copyData['headlines'] ?? [];
+        $descriptions = $copyData['descriptions'] ?? [];
+
+        if (empty($primaryTexts)) {
+            Log::warning('[DRAFT_ENRICHMENT] No primary_texts found in copy enrichment');
+            return $payload;
+        }
+
+        Log::info('[DRAFT_ENRICHMENT] Applying copy to ads', [
+            'ad_count' => count($ads),
+            'primary_text_count' => count($primaryTexts),
+            'headline_count' => count($headlines),
+            'description_count' => count($descriptions),
+        ]);
+
+        // Apply copy to each ad
+        foreach ($ads as $index => &$ad) {
+            // Initialize structure if needed
+            if (!isset($ad['creative']['object_story_spec']['link_data'])) {
+                $ad['creative']['object_story_spec']['link_data'] = [];
+            }
+
+            $linkData = &$ad['creative']['object_story_spec']['link_data'];
+
+            // Map copy by index, fallback to first variant
+            $primaryTextIndex = $index < count($primaryTexts) ? $index : 0;
+            $headlineIndex = $index < count($headlines) ? $index : 0;
+            $descriptionIndex = $index < count($descriptions) ? $index : 0;
+
+            // Apply primary text (message)
+            if (!empty($primaryTexts[$primaryTextIndex])) {
+                $linkData['message'] = $primaryTexts[$primaryTextIndex];
+            }
+
+            // Apply headline (name) if available
+            if (!empty($headlines[$headlineIndex])) {
+                $linkData['name'] = $headlines[$headlineIndex];
+            }
+
+            // Apply description if available
+            if (!empty($descriptions[$descriptionIndex])) {
+                $linkData['description'] = $descriptions[$descriptionIndex];
+            }
+
+            Log::info('[DRAFT_ENRICHMENT] Applied copy to ad', [
+                'ad_index' => $index,
+                'ad_name' => $ad['name'] ?? "Ad #{$index}",
+                'primary_text_applied' => !empty($linkData['message']),
+                'headline_applied' => !empty($linkData['name']),
+                'description_applied' => !empty($linkData['description']),
+            ]);
+        }
+
+        $payload['ads'] = $ads;
+
+        Log::info('[DRAFT_ENRICHMENT] Copy application completed', [
+            'ads_updated' => count($ads),
+        ]);
+
+        return $payload;
     }
 }

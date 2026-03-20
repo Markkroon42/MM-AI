@@ -41,7 +41,8 @@ class CampaignReadinessService
             ],
             [
                 'name' => 'Campaign name',
-                'passed' => !empty($draft->generated_name),
+                // Fix #6: Check payload['campaign']['name'] to align with validation
+                'passed' => !empty($payload['campaign']['name'] ?? null) || !empty($draft->generated_name),
                 'category' => 'campaign',
             ],
             [

@@ -29,16 +29,18 @@ class CampaignDraftBuilderService
             'template_id' => $template->id,
         ]);
 
-        // Generate campaign name
+        // Generate campaign name (Fix #4: include theme)
         $campaignName = $this->generateCampaignName(
             $template->brand,
             $template->market,
             $template->funnel_stage,
-            $template->objective
+            $template->objective,
+            $template->theme
         );
 
         Log::info('[DRAFT_BUILDER] Generated campaign name', [
             'campaign_name' => $campaignName,
+            'theme_used' => $template->theme ?? 'none',
         ]);
 
         // Apply template structure
@@ -56,12 +58,14 @@ class CampaignDraftBuilderService
         $structure = $this->templateService->applyTemplate($template, $briefingData);
 
         // Generate UTM parameters if template has UTM template
+        // Fix #3: Pass campaign template for complete interpolation context
         $utmParameters = [];
         if ($template->utmTemplate) {
             $utmParameters = $this->utmGenerator->generate(
                 $template->utmTemplate,
                 $briefing,
-                $campaignName
+                $campaignName,
+                $template
             );
 
             // Apply UTM parameters to landing page URL
@@ -77,11 +81,18 @@ class CampaignDraftBuilderService
             }
         }
 
-        // Build draft payload
+        // Build draft payload (Fix #1: ensure campaign.name is set in payload)
         $draftPayload = array_merge($structure, [
-            'name' => $campaignName,
+            'campaign' => array_merge($structure['campaign'] ?? [], [
+                'name' => $campaignName,
+            ]),
             'briefing' => $briefingData,
             'utm_parameters' => $utmParameters,
+        ]);
+
+        Log::info('[DRAFT_BUILDER] Campaign name set in payload', [
+            'payload_campaign_name' => $draftPayload['campaign']['name'],
+            'generated_name' => $campaignName,
         ]);
 
         // Create draft
@@ -119,20 +130,29 @@ class CampaignDraftBuilderService
 
     /**
      * Generate campaign name using naming pattern
+     * Fix #4: Include theme in campaign name
      */
     protected function generateCampaignName(
         string $brand,
         string $market,
         string $funnelStage,
-        string $objective
+        string $objective,
+        ?string $theme = null
     ): string {
         $parts = [
             strtoupper($brand),
             strtoupper($market),
             strtoupper($funnelStage),
             strtoupper($objective),
-            now()->format('Ym'),
         ];
+
+        // Add theme if available
+        if ($theme) {
+            $parts[] = strtoupper($theme);
+        }
+
+        // Add date
+        $parts[] = now()->format('Ym');
 
         return implode('_', $parts);
     }

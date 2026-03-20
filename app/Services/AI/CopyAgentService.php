@@ -128,6 +128,7 @@ class CopyAgentService
 
     /**
      * Generate copy variants for an existing draft
+     * Fix #5: Prevent duplicate generation
      *
      * @param CampaignDraft $draft
      * @return DraftEnrichment
@@ -137,6 +138,22 @@ class CopyAgentService
         Log::info('[COPY_AGENT] Generating copy for draft', [
             'draft_id' => $draft->id,
         ]);
+
+        // Fix #5: Check for recent enrichment to prevent duplicates
+        $recentEnrichment = $draft->draftEnrichments()
+            ->where('enrichment_type', DraftEnrichmentTypeEnum::COPY_VARIANTS->value)
+            ->where('created_at', '>', now()->subMinutes(3))
+            ->orderBy('created_at', 'desc')
+            ->first();
+
+        if ($recentEnrichment) {
+            Log::info('[COPY_AGENT] Skipping duplicate generation - recent enrichment exists', [
+                'draft_id' => $draft->id,
+                'enrichment_id' => $recentEnrichment->id,
+                'enrichment_age_seconds' => now()->diffInSeconds($recentEnrichment->created_at),
+            ]);
+            return $recentEnrichment;
+        }
 
         try {
             // Resolve config

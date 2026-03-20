@@ -32,7 +32,8 @@ class DraftValidationService
         }
 
         // Check campaign structure
-        if (empty($payload['campaign']['name'] ?? null)) {
+        // Fix #6: Check both payload and generated_name for backward compatibility
+        if (empty($payload['campaign']['name'] ?? null) && empty($draft->generated_name)) {
             $blockers[] = [
                 'message' => 'Campaign name is required',
                 'category' => 'campaign',

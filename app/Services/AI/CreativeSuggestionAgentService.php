@@ -128,6 +128,7 @@ class CreativeSuggestionAgentService
 
     /**
      * Generate creative suggestions for an existing draft
+     * Fix #5: Prevent duplicate generation
      *
      * @param CampaignDraft $draft
      * @return DraftEnrichment
@@ -137,6 +138,22 @@ class CreativeSuggestionAgentService
         Log::info('[CREATIVE_AGENT] Generating creative suggestions for draft', [
             'draft_id' => $draft->id,
         ]);
+
+        // Fix #5: Check for recent enrichment to prevent duplicates
+        $recentEnrichment = $draft->draftEnrichments()
+            ->where('enrichment_type', DraftEnrichmentTypeEnum::CREATIVE_SUGGESTIONS->value)
+            ->where('created_at', '>', now()->subMinutes(3))
+            ->orderBy('created_at', 'desc')
+            ->first();
+
+        if ($recentEnrichment) {
+            Log::info('[CREATIVE_AGENT] Skipping duplicate generation - recent enrichment exists', [
+                'draft_id' => $draft->id,
+                'enrichment_id' => $recentEnrichment->id,
+                'enrichment_age_seconds' => now()->diffInSeconds($recentEnrichment->created_at),
+            ]);
+            return $recentEnrichment;
+        }
 
         try {
             // Resolve config
