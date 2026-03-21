@@ -23,6 +23,7 @@ class CampaignBriefing extends Model
         'campaign_goal',
         'notes',
         'status',
+        'meta_account_id',
     ];
 
     protected $casts = [

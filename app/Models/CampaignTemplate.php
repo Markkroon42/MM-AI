@@ -24,6 +24,7 @@ class CampaignTemplate extends Model
         'structure_json',
         'creative_rules_json',
         'is_active',
+        'meta_account_id',
     ];
 
     protected $casts = [

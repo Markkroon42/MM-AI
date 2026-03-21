@@ -2,6 +2,7 @@
 
 namespace App\Services\Meta;
 
+use App\Exceptions\NonRetryablePublishException;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -110,6 +111,7 @@ class MetaWriteClient
 
     /**
      * Create new campaign via Meta API
+     * Fix: Handle HTTP errors before Laravel throws RequestException
      */
     public function createCampaign(string $accountId, array $payload): array
     {
@@ -123,6 +125,8 @@ class MetaWriteClient
         try {
             $payload['access_token'] = $this->accessToken;
 
+            // Don't call throw() - default behavior is to not throw on failure
+            // We'll handle errors manually via failed() check
             $response = Http::timeout($this->timeout)
                 ->retry($this->retryTimes, $this->retryDelay, function ($exception, $request) {
                     return $exception instanceof \Illuminate\Http\Client\ConnectionException;
@@ -157,28 +161,45 @@ class MetaWriteClient
 
     /**
      * Log API response
+     * Fix: Don't call json() which may throw, use body() instead
      */
     protected function logResponse(Response $response): void
     {
         Log::info('[META_WRITE_API] Response', [
             'status' => $response->status(),
-            'body' => $response->json(),
+            'body' => $response->body(),
         ]);
     }
 
     /**
      * Handle error responses
+     * Fix: Classify HTTP 400 validation errors as non-retryable
      */
     protected function handleErrorResponse(Response $response): void
     {
         $error = $response->json();
+        $statusCode = $response->status();
 
         Log::error('[META_WRITE_API] API Error', [
-            'status' => $response->status(),
+            'status' => $statusCode,
             'error' => $error,
         ]);
 
         $message = $error['error']['message'] ?? 'Unknown Meta API error';
-        throw new \Exception("Meta API Error: {$message}");
+        $errorCode = $error['error']['code'] ?? null;
+
+        // HTTP 400 indicates request validation errors - these are non-retryable
+        if ($statusCode === 400) {
+            Log::warning('[META_WRITE_API] Meta 400 validation failure detected as non-retryable', [
+                'status' => $statusCode,
+                'error_code' => $errorCode,
+                'message' => $message,
+            ]);
+
+            throw new NonRetryablePublishException("Meta API validation error (400): {$message}");
+        }
+
+        // Other errors are potentially retryable
+        throw new \Exception("Meta API Error ({$statusCode}): {$message}");
     }
 }

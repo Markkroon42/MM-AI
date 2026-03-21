@@ -52,18 +52,41 @@ class UtmGeneratorService
     /**
      * Build replacement patterns
      * Fix #3: Support all common placeholders (lowercase and uppercase)
+     * Fix Issue #2: Add slugging and resolve creative/audience placeholders
      */
     protected function buildReplacements(
         CampaignBriefing $briefing,
         string $campaignName,
         ?CampaignTemplate $campaignTemplate = null
     ): array {
-        $brand = strtolower($briefing->brand);
-        $market = strtolower($briefing->market);
-        $objective = strtolower($briefing->objective);
-        $funnel = $campaignTemplate ? strtolower($campaignTemplate->funnel_stage) : 'unknown';
-        $theme = $campaignTemplate && $campaignTemplate->theme ? strtolower($campaignTemplate->theme) : '';
-        $campaignNameLower = strtolower(str_replace(' ', '_', $campaignName));
+        // Fix Issue #2: Slug values (replace spaces with underscores)
+        $brand = $this->slug(strtolower($briefing->brand));
+        $market = $this->slug(strtolower($briefing->market));
+        $objective = $this->slug(strtolower($briefing->objective));
+        $funnel = $campaignTemplate ? $this->slug(strtolower($campaignTemplate->funnel_stage)) : 'unknown';
+        $theme = $campaignTemplate && $campaignTemplate->theme ? $this->slug(strtolower($campaignTemplate->theme)) : '';
+        $campaignNameLower = $this->slug(strtolower($campaignName));
+
+        Log::info('[UTM_GENERATOR] Slugged brand value', [
+            'original' => $briefing->brand,
+            'slugged' => $brand,
+        ]);
+
+        // Fix Issue #2: Resolve creative and audience placeholders with fallbacks
+        $creativeType = $this->resolveCreativeType($campaignTemplate);
+        $angle = $this->resolveAngle($campaignTemplate);
+        $variant = 'v1'; // Default variant
+        $audience = $this->resolveAudience($campaignTemplate);
+
+        Log::info('[UTM_GENERATOR] Resolved utm_content placeholders', [
+            'creative_type' => $creativeType,
+            'angle' => $angle,
+            'variant' => $variant,
+        ]);
+
+        Log::info('[UTM_GENERATOR] Resolved utm_term placeholder', [
+            'audience' => $audience,
+        ]);
 
         return [
             // Lowercase variants (primary)
@@ -86,12 +109,82 @@ class UtmGeneratorService
             '{YYYYMM}' => now()->format('Ym'),
             '{YYYY}' => now()->format('Y'),
             '{MM}' => now()->format('m'),
-            // Additional placeholders (with safe fallbacks)
-            '{creative_type}' => '{creative_type}', // Keep for later substitution
-            '{angle}' => '{angle}',
-            '{variant}' => '{variant}',
-            '{audience}' => '{audience}',
+            // Additional placeholders (Fix Issue #2: now resolved)
+            '{creative_type}' => $creativeType,
+            '{angle}' => $angle,
+            '{variant}' => $variant,
+            '{audience}' => $audience,
         ];
+    }
+
+    /**
+     * Slug a string (replace spaces and special chars with underscores)
+     * Fix Issue #2
+     */
+    protected function slug(string $value): string
+    {
+        return preg_replace('/[^a-z0-9]+/', '_', strtolower(trim($value)));
+    }
+
+    /**
+     * Resolve creative_type from template structure
+     * Fix Issue #2
+     */
+    protected function resolveCreativeType(?CampaignTemplate $template): string
+    {
+        if (!$template || empty($template->structure_json['ads'])) {
+            return 'generic';
+        }
+
+        $firstAd = $template->structure_json['ads'][0] ?? null;
+        if ($firstAd && isset($firstAd['creative_type'])) {
+            return $this->slug($firstAd['creative_type']);
+        }
+
+        return 'generic';
+    }
+
+    /**
+     * Resolve angle from template structure
+     * Fix Issue #2
+     */
+    protected function resolveAngle(?CampaignTemplate $template): string
+    {
+        if (!$template) {
+            return 'default';
+        }
+
+        // Try to get from template theme or first ad
+        if ($template->theme) {
+            return $this->slug($template->theme);
+        }
+
+        if (!empty($template->structure_json['ads'])) {
+            $firstAd = $template->structure_json['ads'][0] ?? null;
+            if ($firstAd && isset($firstAd['angle'])) {
+                return $this->slug($firstAd['angle']);
+            }
+        }
+
+        return 'default';
+    }
+
+    /**
+     * Resolve audience from template structure
+     * Fix Issue #2
+     */
+    protected function resolveAudience(?CampaignTemplate $template): string
+    {
+        if (!$template || empty($template->structure_json['ad_sets'])) {
+            return 'broad_default';
+        }
+
+        $firstAdSet = $template->structure_json['ad_sets'][0] ?? null;
+        if ($firstAdSet && isset($firstAdSet['audience'])) {
+            return $this->slug($firstAdSet['audience']);
+        }
+
+        return 'broad_default';
     }
 
     /**

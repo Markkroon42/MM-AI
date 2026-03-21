@@ -211,6 +211,18 @@ class CopyAgentService
                 'enrichment_id' => $enrichment->id,
             ]);
 
+            // Fix Issue #1: Automatically apply copy enrichment to draft ads
+            Log::info('[COPY_AGENT] Auto-applying copy enrichment to draft', [
+                'enrichment_id' => $enrichment->id,
+                'draft_id' => $draft->id,
+            ]);
+
+            $this->enrichmentService->applyEnrichment($enrichment, auth()->user());
+
+            Log::info('[COPY_AGENT] Copy auto-apply completed', [
+                'enrichment_id' => $enrichment->id,
+            ]);
+
             return $enrichment;
 
         } catch (\Exception $e) {

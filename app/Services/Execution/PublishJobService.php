@@ -4,6 +4,7 @@ namespace App\Services\Execution;
 
 use App\Enums\PublishActionTypeEnum;
 use App\Enums\PublishJobStatusEnum;
+use App\Jobs\Execution\ExecutePublishJob;
 use App\Models\AuditLog;
 use App\Models\CampaignDraft;
 use App\Models\PublishJob;
@@ -50,11 +51,24 @@ class PublishJobService
             ]
         );
 
+        // Fix Issue #3: Automatically dispatch publish job execution
+        Log::info('[PUBLISH_JOB_SERVICE] Dispatching publish job execution', [
+            'job_id' => $job->id,
+            'draft_id' => $draft->id,
+        ]);
+
+        ExecutePublishJob::dispatch($job);
+
+        Log::info('[PUBLISH_JOB_SERVICE] Publish job dispatched to queue', [
+            'job_id' => $job->id,
+        ]);
+
         return $job;
     }
 
     /**
      * Run a publish job
+     * Fix Issue #3: Enhanced logging for execution tracking
      */
     public function run(PublishJob $job): PublishJob
     {
@@ -73,7 +87,14 @@ class PublishJobService
             switch ($job->action_type) {
                 case PublishActionTypeEnum::PUBLISH_CAMPAIGN_DRAFT->value:
                     if ($job->draft) {
+                        Log::info('[PUBLISH_JOB_EXECUTION] Starting Meta write call', [
+                            'job_id' => $job->id,
+                            'draft_id' => $job->draft->id,
+                        ]);
                         $response = $this->metaCampaignWriteService->publishDraft($job->draft);
+                        Log::info('[PUBLISH_JOB_EXECUTION] Meta write call completed', [
+                            'job_id' => $job->id,
+                        ]);
                     }
                     break;
 
@@ -91,9 +112,18 @@ class PublishJobService
 
             $this->markSuccess($job, $response ?? []);
 
+            Log::info('[PUBLISH_JOB_EXECUTION] Success', [
+                'job_id' => $job->id,
+            ]);
+
             return $job->fresh();
         } catch (\Exception $e) {
             $this->markFailed($job, $e->getMessage());
+
+            Log::error('[PUBLISH_JOB_EXECUTION] Failed', [
+                'job_id' => $job->id,
+                'error' => $e->getMessage(),
+            ]);
 
             Log::error('[PUBLISH_JOB_SERVICE] Publish job failed', [
                 'job_id' => $job->id,
