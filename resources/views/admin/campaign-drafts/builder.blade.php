@@ -342,7 +342,7 @@
                         @foreach($enrichments['latest'] as $enrichment)
                             <x-campaign-builder.ai-suggestion-card
                                 :enrichment="$enrichment"
-                                :type="$enrichment->enrichment_type === 'copy_variants' ? 'copy' : 'creative'"
+                                :type="$enrichment->enrichment_type === 'COPY_VARIANTS' ? 'copy' : ($enrichment->enrichment_type === 'CREATIVE_SUGGESTIONS' ? 'creative_suggestion' : 'creative')"
                             />
                         @endforeach
 

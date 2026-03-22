@@ -153,6 +153,8 @@ class MetaCampaignWriteService
     /**
      * Publish a campaign draft
      * Fix: Proper account ID resolution and payload mapping
+     * Extended: Full hierarchy publish (campaign → ad sets → creatives → ads)
+     * Fix: Idempotency guard to prevent duplicate campaign creation
      */
     public function publishDraft(CampaignDraft $draft): array
     {
@@ -164,7 +166,7 @@ class MetaCampaignWriteService
         try {
             $payload = $draft->draft_payload_json;
 
-            // Fix #1: Resolve account ID with proper fallback chain
+            // Fix #1: Resolve account ID with proper fallback chain (check first)
             $accountId = $this->resolveAccountId($draft, $payload);
 
             // Fix #1 & #4: Validate account ID before proceeding (non-retryable error)
@@ -177,6 +179,9 @@ class MetaCampaignWriteService
                 ]);
                 throw new NonRetryablePublishException($errorMessage);
             }
+
+            // Validate draft before publish
+            $this->validateDraftForPublish($draft, $payload);
 
             Log::info('[META_CAMPAIGN_WRITE] Resolved account ID for publish', [
                 'account_id' => $accountId,
@@ -193,26 +198,133 @@ class MetaCampaignWriteService
                 'daily_budget' => $metaPayload['daily_budget'],
             ]);
 
-            $response = $this->metaWriteClient->createCampaign($accountId, $metaPayload);
+            // Fix: Idempotency guard - check if campaign already created for this draft
+            $existingCampaign = $this->checkExistingCampaign($draft);
+            if ($existingCampaign) {
+                Log::warning('[META_CAMPAIGN_WRITE] Campaign already exists for this draft, reusing existing campaign', [
+                    'draft_id' => $draft->id,
+                    'meta_campaign_id' => $existingCampaign['campaign']['id'],
+                ]);
+                return $existingCampaign;
+            }
+
+            // Step 1: Create campaign
+            $campaignResponse = $this->metaWriteClient->createCampaign($accountId, $metaPayload);
+            $metaCampaignId = $campaignResponse['id'] ?? null;
+
+            if (empty($metaCampaignId)) {
+                throw new \Exception('Campaign created but no ID returned from Meta');
+            }
+
+            Log::info('[META_CAMPAIGN_WRITE] Campaign created successfully', [
+                'draft_id' => $draft->id,
+                'meta_campaign_id' => $metaCampaignId,
+            ]);
+
+            $publishResult = [
+                'campaign' => $campaignResponse,
+                'ad_sets' => [],
+                'creatives' => [],
+                'ads' => [],
+            ];
+
+            // Step 2: Create ad sets
+            $adSets = $payload['ad_sets'] ?? [];
+            $adSetIdMap = [];
+
+            foreach ($adSets as $index => $adSetData) {
+                Log::info('[META_CAMPAIGN_WRITE] Creating ad set', [
+                    'draft_id' => $draft->id,
+                    'ad_set_index' => $index,
+                    'ad_set_name' => $adSetData['name'] ?? "AdSet_{$index}",
+                ]);
+
+                $adSetPayload = $this->buildAdSetPayload($metaCampaignId, $adSetData, $draft, $payload);
+                $adSetResponse = $this->metaWriteClient->createAdSet($accountId, $adSetPayload);
+                $adSetId = $adSetResponse['id'] ?? null;
+
+                if ($adSetId) {
+                    $adSetIdMap[$index] = $adSetId;
+                    $publishResult['ad_sets'][] = $adSetResponse;
+
+                    Log::info('[META_ADSET_WRITE] Ad set created', [
+                        'draft_id' => $draft->id,
+                        'ad_set_id' => $adSetId,
+                        'ad_set_name' => $adSetData['name'] ?? "AdSet_{$index}",
+                    ]);
+                }
+            }
+
+            // Step 3 & 4: Create creatives and ads for each ad set
+            $ads = $payload['ads'] ?? [];
+
+            foreach ($adSetIdMap as $adSetIndex => $adSetId) {
+                foreach ($ads as $adIndex => $adData) {
+                    Log::info('[META_CAMPAIGN_WRITE] Creating ad', [
+                        'draft_id' => $draft->id,
+                        'ad_set_id' => $adSetId,
+                        'ad_index' => $adIndex,
+                        'ad_name' => $adData['name'] ?? "Ad_{$adIndex}",
+                    ]);
+
+                    // Build creative payload with UTM parameters
+                    $creativePayload = $this->buildCreativePayload($adData, $draft, $payload);
+                    $creativeResponse = $this->metaWriteClient->createAdCreative($accountId, $creativePayload);
+                    $creativeId = $creativeResponse['id'] ?? null;
+
+                    if ($creativeId) {
+                        $publishResult['creatives'][] = $creativeResponse;
+
+                        Log::info('[META_CREATIVE_WRITE] Creative created', [
+                            'draft_id' => $draft->id,
+                            'creative_id' => $creativeId,
+                            'ad_name' => $adData['name'] ?? "Ad_{$adIndex}",
+                        ]);
+
+                        // Create ad with creative
+                        $adPayload = $this->buildAdPayload($adSetId, $creativeId, $adData);
+                        $adResponse = $this->metaWriteClient->createAd($accountId, $adPayload);
+                        $adId = $adResponse['id'] ?? null;
+
+                        if ($adId) {
+                            $publishResult['ads'][] = $adResponse;
+
+                            Log::info('[META_AD_WRITE] Ad created', [
+                                'draft_id' => $draft->id,
+                                'ad_id' => $adId,
+                                'ad_set_id' => $adSetId,
+                                'creative_id' => $creativeId,
+                                'ad_name' => $adData['name'] ?? "Ad_{$adIndex}",
+                            ]);
+                        }
+                    }
+                }
+            }
 
             AuditLog::log(
                 'draft_published',
                 $draft,
                 null,
-                ['meta_campaign_id' => $response['id'] ?? null],
+                ['meta_campaign_id' => $metaCampaignId],
                 [
-                    'meta_response' => $response,
+                    'meta_response' => $publishResult,
                     'payload' => $metaPayload,
                     'account_id' => $accountId,
+                    'ad_sets_count' => count($publishResult['ad_sets']),
+                    'creatives_count' => count($publishResult['creatives']),
+                    'ads_count' => count($publishResult['ads']),
                 ]
             );
 
             Log::info('[META_CAMPAIGN_WRITE] Campaign draft published successfully', [
                 'draft_id' => $draft->id,
-                'meta_campaign_id' => $response['id'] ?? null,
+                'meta_campaign_id' => $metaCampaignId,
+                'ad_sets_created' => count($publishResult['ad_sets']),
+                'creatives_created' => count($publishResult['creatives']),
+                'ads_created' => count($publishResult['ads']),
             ]);
 
-            return $response;
+            return $publishResult;
         } catch (\Exception $e) {
             Log::error('[META_CAMPAIGN_WRITE] Failed to publish campaign draft', [
                 'draft_id' => $draft->id,
@@ -361,7 +473,7 @@ class MetaCampaignWriteService
     }
 
     /**
-     * Map internal objective to Meta objective format
+     * Map internal objective to Meta objective format (campaign level)
      * Fix #3: Proper objective mapping
      */
     protected function mapObjectiveToMeta(string $objective): string
@@ -398,6 +510,412 @@ class MetaCampaignWriteService
         }
 
         return $mapped;
+    }
+
+    /**
+     * Map internal optimization goal to Meta ad set optimization_goal
+     * Fix: Ad set optimization_goal is different from campaign objective
+     */
+    protected function mapOptimizationGoalToMeta(string $optimizationGoal): string
+    {
+        // Map internal optimization goals to valid Meta ad set optimization goals
+        $mapping = [
+            'LEADS' => 'LEAD_GENERATION',
+            'LEAD_GENERATION' => 'LEAD_GENERATION',
+            'TRAFFIC' => 'LINK_CLICKS',
+            'LINK_CLICKS' => 'LINK_CLICKS',
+            'LANDING_PAGE_VIEWS' => 'LANDING_PAGE_VIEWS',
+            'AWARENESS' => 'REACH',
+            'REACH' => 'REACH',
+            'IMPRESSIONS' => 'IMPRESSIONS',
+            'ENGAGEMENT' => 'POST_ENGAGEMENT',
+            'POST_ENGAGEMENT' => 'POST_ENGAGEMENT',
+            'VIDEO_VIEWS' => 'VIDEO_VIEWS',
+            'CONVERSIONS' => 'OFFSITE_CONVERSIONS',
+            'OFFSITE_CONVERSIONS' => 'OFFSITE_CONVERSIONS',
+            'APP_INSTALLS' => 'APP_INSTALLS',
+            'SALES' => 'OFFSITE_CONVERSIONS',
+        ];
+
+        $mapped = $mapping[$optimizationGoal] ?? null;
+
+        if (!$mapped) {
+            // If not found, check if it's already a valid Meta optimization goal
+            $validMetaGoals = array_values($mapping);
+            if (in_array($optimizationGoal, $validMetaGoals)) {
+                Log::info('[META_ADSET_WRITE] Optimization goal already in Meta format', [
+                    'optimization_goal' => $optimizationGoal,
+                ]);
+                return $optimizationGoal;
+            }
+
+            // Controlled failure for unknown optimization goals
+            $errorMessage = "Unknown optimization goal '{$optimizationGoal}' cannot be mapped to valid Meta ad set optimization_goal";
+            Log::error('[META_ADSET_WRITE] Invalid optimization goal', [
+                'optimization_goal' => $optimizationGoal,
+                'valid_values' => array_keys($mapping),
+            ]);
+            throw new NonRetryablePublishException($errorMessage);
+        }
+
+        return $mapped;
+    }
+
+    /**
+     * Validate draft before publish
+     */
+    protected function validateDraftForPublish(CampaignDraft $draft, array $payload): void
+    {
+        $campaign = $payload['campaign'] ?? [];
+        $adSets = $payload['ad_sets'] ?? [];
+        $ads = $payload['ads'] ?? [];
+
+        // Campaign name validation
+        $campaignName = $campaign['name'] ?? $draft->generated_name ?? null;
+        if (empty($campaignName)) {
+            Log::error('[META_CAMPAIGN_WRITE] Validation failed: No campaign name', [
+                'draft_id' => $draft->id,
+            ]);
+            throw new NonRetryablePublishException('No campaign name available for publish');
+        }
+
+        // Ad sets validation
+        if (empty($adSets)) {
+            Log::error('[META_CAMPAIGN_WRITE] Validation failed: No ad sets', [
+                'draft_id' => $draft->id,
+            ]);
+            throw new NonRetryablePublishException('Cannot publish campaign without ad sets');
+        }
+
+        // Ads validation
+        if (empty($ads)) {
+            Log::error('[META_CAMPAIGN_WRITE] Validation failed: No ads', [
+                'draft_id' => $draft->id,
+            ]);
+            throw new NonRetryablePublishException('Cannot publish campaign without ads');
+        }
+
+        // Landing page validation
+        $landingPage = $campaign['landing_page_url']
+            ?? $draft->template?->landing_page_url
+            ?? $draft->briefing?->landing_page_url
+            ?? null;
+
+        if (empty($landingPage)) {
+            Log::error('[META_CAMPAIGN_WRITE] Validation failed: No landing page URL', [
+                'draft_id' => $draft->id,
+            ]);
+            throw new NonRetryablePublishException('No landing page URL available for publish');
+        }
+
+        // Validate ads have copy
+        foreach ($ads as $index => $adData) {
+            $hasCopy = !empty($adData['creative']['object_story_spec']['link_data']['message'] ?? null)
+                || !empty($adData['creative']['message'] ?? null)
+                || !empty($adData['message'] ?? null);
+
+            if (!$hasCopy) {
+                Log::warning('[META_CAMPAIGN_WRITE] Ad missing copy, but continuing', [
+                    'draft_id' => $draft->id,
+                    'ad_index' => $index,
+                    'ad_name' => $adData['name'] ?? "Ad_{$index}",
+                ]);
+            }
+        }
+
+        Log::info('[META_CAMPAIGN_WRITE] Draft validation passed', [
+            'draft_id' => $draft->id,
+            'campaign_name' => $campaignName,
+            'ad_sets_count' => count($adSets),
+            'ads_count' => count($ads),
+        ]);
+    }
+
+    /**
+     * Build ad set payload for Meta API
+     * Fix: Explicit bid_strategy to avoid bid_amount requirement
+     * Fix: Complete ad set payload logging
+     */
+    protected function buildAdSetPayload(string $campaignId, array $adSetData, CampaignDraft $draft, array $draftPayload): array
+    {
+        $campaign = $draftPayload['campaign'] ?? [];
+
+        $name = $adSetData['name'] ?? 'AdSet_' . uniqid();
+        $internalOptimizationGoal = strtoupper($adSetData['optimization_goal'] ?? 'LEADS');
+        $billingEvent = $adSetData['billing_event'] ?? 'IMPRESSIONS';
+
+        // Map internal optimization goal to Meta ad set optimization_goal
+        $metaOptimizationGoal = $this->mapOptimizationGoalToMeta($internalOptimizationGoal);
+
+        // Use campaign budget or ad set specific budget
+        $dailyBudget = $adSetData['daily_budget']
+            ?? $campaign['daily_budget']
+            ?? $draft->briefing?->budget_amount
+            ?? $draft->template?->default_budget
+            ?? null;
+
+        $dailyBudgetCents = $dailyBudget ? (int) ($dailyBudget * 100) : null;
+
+        $payload = [
+            'name' => $name,
+            'campaign_id' => $campaignId,
+            'status' => 'PAUSED',
+            'optimization_goal' => $metaOptimizationGoal,
+            'billing_event' => $billingEvent,
+            'targeting' => $this->buildTargeting($adSetData),
+        ];
+
+        // Fix: Use LOWEST_COST_WITHOUT_CAP to avoid bid_amount requirement
+        // This is a safe default bidding strategy for first publish
+        $payload['bid_strategy'] = 'LOWEST_COST_WITHOUT_CAP';
+
+        // Add budget if available
+        if ($dailyBudgetCents) {
+            $payload['daily_budget'] = $dailyBudgetCents;
+        }
+
+        // Add promoted object for leads objective
+        if ($metaOptimizationGoal === 'LEAD_GENERATION') {
+            $payload['promoted_object'] = [
+                'pixel_id' => config('meta.pixel_id'),
+                'custom_event_type' => 'LEAD',
+            ];
+        }
+
+        Log::info('[META_ADSET_WRITE] Mapped internal objective to Meta optimization goal', [
+            'internal_optimization_goal' => $internalOptimizationGoal,
+            'meta_optimization_goal' => $metaOptimizationGoal,
+        ]);
+
+        // Fix: Full ad set payload logging with all relevant Meta fields
+        Log::info('[META_ADSET_WRITE] Full ad set payload prepared', [
+            'name' => $name,
+            'campaign_id' => $campaignId,
+            'optimization_goal' => $metaOptimizationGoal,
+            'billing_event' => $billingEvent,
+            'bid_strategy' => $payload['bid_strategy'],
+            'bid_amount' => $payload['bid_amount'] ?? null,
+            'daily_budget_cents' => $dailyBudgetCents,
+            'status' => $payload['status'],
+            'has_promoted_object' => isset($payload['promoted_object']),
+            'promoted_object' => $payload['promoted_object'] ?? null,
+            'targeting_countries' => $payload['targeting']['geo_locations']['countries'] ?? null,
+        ]);
+
+        return $payload;
+    }
+
+    /**
+     * Build targeting for ad set
+     */
+    protected function buildTargeting(array $adSetData): array
+    {
+        // Default targeting structure
+        $targeting = [
+            'geo_locations' => [
+                'countries' => ['NL'], // Default to Netherlands
+            ],
+        ];
+
+        // Add custom targeting if provided
+        if (!empty($adSetData['targeting'])) {
+            $targeting = array_merge($targeting, $adSetData['targeting']);
+        }
+
+        // Add audience if provided
+        if (!empty($adSetData['audience'])) {
+            Log::info('[META_ADSET_WRITE] Using audience targeting', [
+                'audience' => $adSetData['audience'],
+            ]);
+        }
+
+        return $targeting;
+    }
+
+    /**
+     * Build creative payload for Meta API
+     */
+    protected function buildCreativePayload(array $adData, CampaignDraft $draft, array $draftPayload): array
+    {
+        $campaign = $draftPayload['campaign'] ?? [];
+
+        $name = $adData['name'] ?? 'Creative_' . uniqid();
+
+        // Get copy from various sources
+        $creative = $adData['creative'] ?? [];
+        $linkData = $creative['object_story_spec']['link_data'] ?? $creative['link_data'] ?? [];
+
+        $message = $linkData['message']
+            ?? $creative['message']
+            ?? $adData['message']
+            ?? $adData['primary_text']
+            ?? '';
+
+        $headline = $linkData['name']
+            ?? $creative['headline']
+            ?? $adData['headline']
+            ?? '';
+
+        $description = $linkData['description']
+            ?? $creative['description']
+            ?? $adData['description']
+            ?? '';
+
+        // Build landing page URL with UTM parameters
+        $baseLandingPage = $adData['landing_page_url']
+            ?? $campaign['landing_page_url']
+            ?? $draft->template?->landing_page_url
+            ?? '';
+
+        $destinationUrl = $this->buildDestinationUrl($baseLandingPage, $adData, $draftPayload);
+
+        Log::info('[META_CREATIVE_WRITE] Using destination URL', [
+            'base_url' => $baseLandingPage,
+            'final_url' => $destinationUrl,
+        ]);
+
+        $payload = [
+            'name' => $name,
+            'object_story_spec' => [
+                'page_id' => config('meta.page_id'),
+                'link_data' => [
+                    'link' => $destinationUrl,
+                    'message' => $message,
+                    'name' => $headline,
+                    'description' => $description,
+                ],
+            ],
+        ];
+
+        Log::info('[META_CREATIVE_WRITE] Built creative payload', [
+            'name' => $name,
+            'has_message' => !empty($message),
+            'has_headline' => !empty($headline),
+            'has_description' => !empty($description),
+            'destination_url' => $destinationUrl,
+        ]);
+
+        return $payload;
+    }
+
+    /**
+     * Build destination URL with UTM parameters
+     */
+    protected function buildDestinationUrl(string $baseUrl, array $adData, array $draftPayload): string
+    {
+        if (empty($baseUrl)) {
+            Log::warning('[META_CREATIVE_WRITE] No base URL provided for destination');
+            return '';
+        }
+
+        // Check if UTM parameters are already in the ad data
+        $utmParams = $adData['utm_parameters'] ?? [];
+
+        if (empty($utmParams)) {
+            // Return base URL if no UTM parameters
+            return $baseUrl;
+        }
+
+        // Build query string from UTM parameters
+        $queryParams = [];
+        foreach ($utmParams as $key => $value) {
+            if (!empty($value)) {
+                $queryParams[$key] = $value;
+            }
+        }
+
+        if (empty($queryParams)) {
+            return $baseUrl;
+        }
+
+        // Parse existing URL to check for existing query params
+        $parsedUrl = parse_url($baseUrl);
+        $existingQuery = $parsedUrl['query'] ?? '';
+
+        // Build final query string
+        $newQueryString = http_build_query($queryParams);
+
+        if (!empty($existingQuery)) {
+            $finalUrl = $baseUrl . '&' . $newQueryString;
+        } else {
+            $separator = strpos($baseUrl, '?') === false ? '?' : '&';
+            $finalUrl = $baseUrl . $separator . $newQueryString;
+        }
+
+        Log::info('[META_CREATIVE_WRITE] Built destination URL with UTM parameters', [
+            'base_url' => $baseUrl,
+            'utm_params' => $queryParams,
+            'final_url' => $finalUrl,
+        ]);
+
+        return $finalUrl;
+    }
+
+    /**
+     * Build ad payload for Meta API
+     */
+    protected function buildAdPayload(string $adSetId, string $creativeId, array $adData): array
+    {
+        $name = $adData['name'] ?? 'Ad_' . uniqid();
+
+        $payload = [
+            'name' => $name,
+            'adset_id' => $adSetId,
+            'creative' => ['creative_id' => $creativeId],
+            'status' => 'PAUSED',
+        ];
+
+        Log::info('[META_AD_WRITE] Built ad payload', [
+            'name' => $name,
+            'adset_id' => $adSetId,
+            'creative_id' => $creativeId,
+        ]);
+
+        return $payload;
+    }
+
+    /**
+     * Check if campaign already exists for this draft
+     * Fix: Idempotency helper to prevent duplicate campaign creation
+     */
+    protected function checkExistingCampaign(CampaignDraft $draft): ?array
+    {
+        // Check if draft has any successful publish jobs with campaign results
+        $successfulPublishJob = $draft->publishJobs()
+            ->where('status', 'success')
+            ->where('action_type', 'publish_campaign_draft')
+            ->whereNotNull('response_json')
+            ->latest()
+            ->first();
+
+        if (!$successfulPublishJob) {
+            Log::info('[META_CAMPAIGN_WRITE] No existing successful publish job found', [
+                'draft_id' => $draft->id,
+            ]);
+            return null;
+        }
+
+        $response = $successfulPublishJob->response_json;
+
+        // Check if response contains a campaign ID
+        $campaignId = $response['campaign']['id'] ?? null;
+
+        if (!$campaignId) {
+            Log::warning('[META_CAMPAIGN_WRITE] Successful publish job found but no campaign ID in response', [
+                'draft_id' => $draft->id,
+                'publish_job_id' => $successfulPublishJob->id,
+            ]);
+            return null;
+        }
+
+        Log::info('[META_CAMPAIGN_WRITE] Found existing campaign from previous successful publish', [
+            'draft_id' => $draft->id,
+            'publish_job_id' => $successfulPublishJob->id,
+            'campaign_id' => $campaignId,
+            'executed_at' => $successfulPublishJob->executed_at,
+        ]);
+
+        return $response;
     }
 }
 

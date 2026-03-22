@@ -156,7 +156,7 @@
     <div class="card">
         <div class="card-body">
             <div class="small text-muted">Last updated</div>
-            <div class="small">{{ $draft->updated_at->diffForHumans() }}</div>
+            <div class="small">{{ $draft->updated_at?->diffForHumans() ?? 'Just now' }}</div>
         </div>
     </div>
 </div>

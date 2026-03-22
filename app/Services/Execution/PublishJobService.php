@@ -69,6 +69,7 @@ class PublishJobService
     /**
      * Run a publish job
      * Fix Issue #3: Enhanced logging for execution tracking
+     * Extended: Duplicate execution protection
      */
     public function run(PublishJob $job): PublishJob
     {
@@ -77,6 +78,15 @@ class PublishJobService
             'action_type' => $job->action_type,
             'attempts' => $job->attempts,
         ]);
+
+        // Duplicate execution protection: Check if job already succeeded
+        if ($job->status === PublishJobStatusEnum::SUCCESS->value) {
+            Log::warning('[PUBLISH_JOB_EXECUTION] Job already completed successfully, skipping execution', [
+                'job_id' => $job->id,
+                'executed_at' => $job->executed_at,
+            ]);
+            return $job;
+        }
 
         $this->markRunning($job);
 

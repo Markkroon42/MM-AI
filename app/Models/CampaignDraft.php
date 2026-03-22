@@ -59,4 +59,9 @@ class CampaignDraft extends Model
     {
         return $this->hasMany(DraftEnrichment::class, 'campaign_draft_id');
     }
+
+    public function enrichments(): HasMany
+    {
+        return $this->hasMany(DraftEnrichment::class, 'campaign_draft_id');
+    }
 }

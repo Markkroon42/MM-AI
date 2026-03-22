@@ -163,7 +163,7 @@
                             <div class="mb-3">
                                 <strong class="d-block mb-2">Generated Content:</strong>
                                 <div class="bg-light p-3 rounded">
-                                    @if($enrichment->enrichment_type === 'copy')
+                                    @if($enrichment->enrichment_type === 'COPY_VARIANTS')
                                         @php $payload = $enrichment->payload_json; @endphp
                                         @if(!empty($payload['primary_texts']))
                                             <div class="mb-3">
@@ -205,36 +205,137 @@
                                                 </ul>
                                             </div>
                                         @endif
-                                    @elseif($enrichment->enrichment_type === 'creative')
-                                        @php $payload = $enrichment->payload_json; @endphp
-                                        @if(!empty($payload['static_visual_ideas']))
-                                            <div class="mb-3">
-                                                <strong>Static Visual Ideas:</strong>
-                                                <ul class="mb-0 mt-1">
-                                                    @foreach($payload['static_visual_ideas'] as $idea)
-                                                        <li>{{ $idea }}</li>
-                                                    @endforeach
-                                                </ul>
+                                    @elseif($enrichment->enrichment_type === 'CREATIVE_SUGGESTIONS')
+                                        @php
+                                            $payload = $enrichment->payload_json;
+                                            \Log::info('[DRAFT_ENRICHMENT_UI] Rendering creative suggestion', [
+                                                'enrichment_id' => $enrichment->id,
+                                                'has_payload' => !empty($payload),
+                                                'payload_keys' => !empty($payload) ? array_keys($payload) : [],
+                                            ]);
+                                        @endphp
+                                        @if(!empty($payload['suggestions']) && is_array($payload['suggestions']))
+                                            @foreach($payload['suggestions'] as $index => $suggestion)
+                                                <div class="border rounded p-3 mb-3 bg-white">
+                                                    @if(!empty($suggestion['title']))
+                                                        <h6 class="fw-bold mb-2">{{ $suggestion['title'] }}</h6>
+                                                    @endif
+
+                                                    @if(!empty($suggestion['hook']))
+                                                        <div class="mb-2">
+                                                            <strong class="text-muted small">Hook:</strong>
+                                                            <p class="mb-1">{{ $suggestion['hook'] }}</p>
+                                                        </div>
+                                                    @endif
+
+                                                    @if(!empty($suggestion['format']))
+                                                        <div class="mb-2">
+                                                            <strong class="text-muted small">Format:</strong>
+                                                            <span class="badge bg-secondary">{{ $suggestion['format'] }}</span>
+                                                        </div>
+                                                    @endif
+
+                                                    @if(!empty($suggestion['description']))
+                                                        <div class="mb-2">
+                                                            <strong class="text-muted small">Description:</strong>
+                                                            <p class="mb-1">{{ $suggestion['description'] }}</p>
+                                                        </div>
+                                                    @endif
+
+                                                    @if(!empty($suggestion['angle']))
+                                                        <div class="mb-2">
+                                                            <strong class="text-muted small">Angle:</strong>
+                                                            <p class="mb-1">{{ $suggestion['angle'] }}</p>
+                                                        </div>
+                                                    @endif
+
+                                                    @if(!empty($suggestion['cta_direction']))
+                                                        <div class="mb-2">
+                                                            <strong class="text-muted small">CTA Direction:</strong>
+                                                            <p class="mb-1">{{ $suggestion['cta_direction'] }}</p>
+                                                        </div>
+                                                    @endif
+
+                                                    @if(!empty($suggestion['target_audience_context']))
+                                                        <div class="mb-2">
+                                                            <strong class="text-muted small">Target Audience:</strong>
+                                                            <p class="mb-1">{{ $suggestion['target_audience_context'] }}</p>
+                                                        </div>
+                                                    @endif
+
+                                                    @if(!empty($suggestion['body']))
+                                                        <div class="mb-2">
+                                                            <strong class="text-muted small">Body:</strong>
+                                                            <p class="mb-0">{{ $suggestion['body'] }}</p>
+                                                        </div>
+                                                    @endif
+
+                                                    @if(!empty($suggestion['summary']))
+                                                        <div class="mb-0">
+                                                            <strong class="text-muted small">Summary:</strong>
+                                                            <p class="mb-0">{{ $suggestion['summary'] }}</p>
+                                                        </div>
+                                                    @endif
+                                                </div>
+                                            @endforeach
+                                        @elseif(!empty($payload['static_visual_ideas']) || !empty($payload['video_concepts']) || !empty($payload['ugc_angles']))
+                                            @if(!empty($payload['static_visual_ideas']))
+                                                <div class="mb-3">
+                                                    <strong>Static Visual Ideas:</strong>
+                                                    <ul class="mb-0 mt-1">
+                                                        @foreach($payload['static_visual_ideas'] as $idea)
+                                                            <li>{{ $idea }}</li>
+                                                        @endforeach
+                                                    </ul>
+                                                </div>
+                                            @endif
+                                            @if(!empty($payload['video_concepts']))
+                                                <div class="mb-3">
+                                                    <strong>Video Concepts:</strong>
+                                                    <ul class="mb-0 mt-1">
+                                                        @foreach($payload['video_concepts'] as $concept)
+                                                            <li>{{ $concept }}</li>
+                                                        @endforeach
+                                                    </ul>
+                                                </div>
+                                            @endif
+                                            @if(!empty($payload['ugc_angles']))
+                                                <div class="mb-3">
+                                                    <strong>UGC Angles:</strong>
+                                                    <ul class="mb-0 mt-1">
+                                                        @foreach($payload['ugc_angles'] as $angle)
+                                                            <li>{{ $angle }}</li>
+                                                        @endforeach
+                                                    </ul>
+                                                </div>
+                                            @endif
+                                        @elseif(is_string($payload))
+                                            <div class="p-3 bg-white border rounded">
+                                                <p class="mb-0">{{ $payload }}</p>
                                             </div>
-                                        @endif
-                                        @if(!empty($payload['video_concepts']))
-                                            <div class="mb-3">
-                                                <strong>Video Concepts:</strong>
-                                                <ul class="mb-0 mt-1">
-                                                    @foreach($payload['video_concepts'] as $concept)
-                                                        <li>{{ $concept }}</li>
-                                                    @endforeach
-                                                </ul>
+                                        @elseif(!empty($payload))
+                                            @php
+                                                \Log::warning('[DRAFT_ENRICHMENT_UI] Creative suggestion payload structure not recognized', [
+                                                    'enrichment_id' => $enrichment->id,
+                                                    'payload_keys' => array_keys($payload),
+                                                ]);
+                                            @endphp
+                                            <div class="alert alert-warning mb-0">
+                                                <i class="bi bi-exclamation-triangle"></i>
+                                                Preview not available for this creative suggestion format.
                                             </div>
-                                        @endif
-                                        @if(!empty($payload['ugc_angles']))
-                                            <div class="mb-3">
-                                                <strong>UGC Angles:</strong>
-                                                <ul class="mb-0 mt-1">
-                                                    @foreach($payload['ugc_angles'] as $angle)
-                                                        <li>{{ $angle }}</li>
-                                                    @endforeach
-                                                </ul>
+                                            <details class="mt-2">
+                                                <summary class="text-muted small" style="cursor: pointer;">Show raw data</summary>
+                                                <pre class="mb-0 mt-2 small" style="max-height: 200px; overflow-y: auto;"><code>{{ json_encode($payload, JSON_PRETTY_PRINT) }}</code></pre>
+                                            </details>
+                                        @else
+                                            @php
+                                                \Log::warning('[DRAFT_ENRICHMENT_UI] Creative suggestion payload empty', [
+                                                    'enrichment_id' => $enrichment->id,
+                                                ]);
+                                            @endphp
+                                            <div class="alert alert-warning mb-0">
+                                                <i class="bi bi-exclamation-triangle"></i> No creative suggestion content available.
                                             </div>
                                         @endif
                                     @else
@@ -245,22 +346,25 @@
 
                             <!-- Action Buttons -->
                             @if($enrichment->status === 'draft')
-                                @can('review_draft_enrichments')
-                                <div class="d-flex gap-2">
-                                    <form method="POST" action="{{ route('admin.draft-enrichments.approve', $enrichment) }}" class="d-inline">
+                                <div class="d-flex gap-2 align-items-center">
+                                    @can('apply_draft_enrichments')
+                                    <form method="POST" action="{{ route('admin.draft-enrichments.apply', $enrichment) }}" class="d-inline">
                                         @csrf
-                                        <button type="submit" class="btn btn-success btn-sm">
-                                            <i class="bi bi-check-circle"></i> Approve
+                                        <button type="submit" class="btn btn-primary btn-sm">
+                                            <i class="bi bi-check-circle"></i> Use This
                                         </button>
                                     </form>
+                                    @endcan
+
+                                    @can('review_draft_enrichments')
                                     <form method="POST" action="{{ route('admin.draft-enrichments.reject', $enrichment) }}" class="d-inline">
                                         @csrf
-                                        <button type="submit" class="btn btn-danger btn-sm">
+                                        <button type="submit" class="btn btn-outline-danger btn-sm">
                                             <i class="bi bi-x-circle"></i> Reject
                                         </button>
                                     </form>
+                                    @endcan
                                 </div>
-                                @endcan
                             @elseif($enrichment->status === 'approved')
                                 @can('apply_draft_enrichments')
                                 <form method="POST" action="{{ route('admin.draft-enrichments.apply', $enrichment) }}" class="d-inline">

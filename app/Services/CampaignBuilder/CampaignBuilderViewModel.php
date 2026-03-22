@@ -48,9 +48,9 @@ class CampaignBuilderViewModel
         $enrichments = $draft->draftEnrichments;
 
         return [
-            'copy_count' => $enrichments->where('enrichment_type', 'copy_variants')->count(),
-            'creative_count' => $enrichments->where('enrichment_type', 'creative_suggestions')->count(),
-            'strategy_count' => $enrichments->where('enrichment_type', 'strategy')->count(),
+            'copy_count' => $enrichments->where('enrichment_type', 'COPY_VARIANTS')->count(),
+            'creative_count' => $enrichments->where('enrichment_type', 'CREATIVE_SUGGESTIONS')->count(),
+            'strategy_count' => $enrichments->where('enrichment_type', 'STRATEGY_NOTES')->count(),
             'total_count' => $enrichments->count(),
             'latest' => $enrichments->sortByDesc('created_at')->take(3),
         ];

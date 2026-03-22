@@ -115,7 +115,9 @@ class MetaWriteClient
      */
     public function createCampaign(string $accountId, array $payload): array
     {
-        $url = $this->buildUrl("act_{$accountId}/campaigns");
+        // Remove 'act_' prefix if already present
+        $cleanAccountId = str_starts_with($accountId, 'act_') ? $accountId : "act_{$accountId}";
+        $url = $this->buildUrl("{$cleanAccountId}/campaigns");
 
         Log::info('[META_WRITE_API] Creating campaign', [
             'account_id' => $accountId,
@@ -125,12 +127,9 @@ class MetaWriteClient
         try {
             $payload['access_token'] = $this->accessToken;
 
-            // Don't call throw() - default behavior is to not throw on failure
-            // We'll handle errors manually via failed() check
+            // Don't use retry() as it throws before we can handle errors
+            // Manual retry logic would be needed for production, but for now handle directly
             $response = Http::timeout($this->timeout)
-                ->retry($this->retryTimes, $this->retryDelay, function ($exception, $request) {
-                    return $exception instanceof \Illuminate\Http\Client\ConnectionException;
-                })
                 ->post($url, $payload);
 
             $this->logResponse($response);
@@ -143,6 +142,141 @@ class MetaWriteClient
         } catch (\Exception $e) {
             Log::error('[META_WRITE_API] Campaign creation failed', [
                 'account_id' => $accountId,
+                'error' => $e->getMessage(),
+            ]);
+
+            throw $e;
+        }
+    }
+
+    /**
+     * Create ad set via Meta API
+     */
+    public function createAdSet(string $accountId, array $payload): array
+    {
+        $cleanAccountId = str_starts_with($accountId, 'act_') ? $accountId : "act_{$accountId}";
+        $url = $this->buildUrl("{$cleanAccountId}/adsets");
+
+        Log::info('[META_ADSET_WRITE] Creating ad set', [
+            'account_id' => $accountId,
+            'campaign_id' => $payload['campaign_id'] ?? null,
+            'name' => $payload['name'] ?? null,
+        ]);
+
+        try {
+            $payload['access_token'] = $this->accessToken;
+
+            $response = Http::timeout($this->timeout)
+                ->post($url, $payload);
+
+            $this->logResponse($response);
+
+            if ($response->failed()) {
+                $this->handleErrorResponse($response);
+            }
+
+            $result = $response->json();
+
+            Log::info('[META_ADSET_WRITE] Ad set created successfully', [
+                'ad_set_id' => $result['id'] ?? null,
+                'name' => $payload['name'] ?? null,
+            ]);
+
+            return $result;
+        } catch (\Exception $e) {
+            Log::error('[META_ADSET_WRITE] Ad set creation failed', [
+                'account_id' => $accountId,
+                'name' => $payload['name'] ?? null,
+                'error' => $e->getMessage(),
+            ]);
+
+            throw $e;
+        }
+    }
+
+    /**
+     * Create ad creative via Meta API
+     */
+    public function createAdCreative(string $accountId, array $payload): array
+    {
+        $cleanAccountId = str_starts_with($accountId, 'act_') ? $accountId : "act_{$accountId}";
+        $url = $this->buildUrl("{$cleanAccountId}/adcreatives");
+
+        Log::info('[META_CREATIVE_WRITE] Creating ad creative', [
+            'account_id' => $accountId,
+            'name' => $payload['name'] ?? null,
+        ]);
+
+        try {
+            $payload['access_token'] = $this->accessToken;
+
+            $response = Http::timeout($this->timeout)
+                ->post($url, $payload);
+
+            $this->logResponse($response);
+
+            if ($response->failed()) {
+                $this->handleErrorResponse($response);
+            }
+
+            $result = $response->json();
+
+            Log::info('[META_CREATIVE_WRITE] Ad creative created successfully', [
+                'creative_id' => $result['id'] ?? null,
+                'name' => $payload['name'] ?? null,
+            ]);
+
+            return $result;
+        } catch (\Exception $e) {
+            Log::error('[META_CREATIVE_WRITE] Ad creative creation failed', [
+                'account_id' => $accountId,
+                'name' => $payload['name'] ?? null,
+                'error' => $e->getMessage(),
+            ]);
+
+            throw $e;
+        }
+    }
+
+    /**
+     * Create ad via Meta API
+     */
+    public function createAd(string $accountId, array $payload): array
+    {
+        $cleanAccountId = str_starts_with($accountId, 'act_') ? $accountId : "act_{$accountId}";
+        $url = $this->buildUrl("{$cleanAccountId}/ads");
+
+        Log::info('[META_AD_WRITE] Creating ad', [
+            'account_id' => $accountId,
+            'adset_id' => $payload['adset_id'] ?? null,
+            'name' => $payload['name'] ?? null,
+        ]);
+
+        try {
+            $payload['access_token'] = $this->accessToken;
+
+            $response = Http::timeout($this->timeout)
+                ->post($url, $payload);
+
+            $this->logResponse($response);
+
+            if ($response->failed()) {
+                $this->handleErrorResponse($response);
+            }
+
+            $result = $response->json();
+
+            Log::info('[META_AD_WRITE] Ad created successfully', [
+                'ad_id' => $result['id'] ?? null,
+                'name' => $payload['name'] ?? null,
+            ]);
+
+            return $result;
+        } catch (\Exception $e) {
+            Log::error('[META_AD_WRITE] Ad creation failed', [
+                'account_id' => $accountId,
+                'adset_id' => $payload['adset_id'] ?? null,
+                'name' => $payload['name'] ?? null,
                 'error' => $e->getMessage(),
             ]);
 
