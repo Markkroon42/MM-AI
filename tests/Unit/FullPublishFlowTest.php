@@ -29,6 +29,7 @@ class FullPublishFlowTest extends TestCase
     {
         config(['meta.default_account_id' => 'act_12345']);
         config(['meta.page_id' => 'page_12345']);
+        config(['meta.lead_gen_form_id' => 'form_12345']);
         config(['meta.pixel_id' => 'pixel_12345']);
 
         $briefing = CampaignBriefing::factory()->create([
@@ -225,6 +226,7 @@ class FullPublishFlowTest extends TestCase
     {
         config(['meta.default_account_id' => 'act_12345']);
         config(['meta.page_id' => 'page_12345']);
+        config(['meta.lead_gen_form_id' => 'form_12345']);
 
         $draft = CampaignDraft::factory()->create([
             'draft_payload_json' => [
@@ -278,6 +280,7 @@ class FullPublishFlowTest extends TestCase
     public function test_creative_payload_includes_ad_copy()
     {
         config(['meta.page_id' => 'page_12345']);
+        config(['meta.lead_gen_form_id' => 'form_12345']);
 
         $template = CampaignTemplate::factory()->create([
             'landing_page_url' => 'https://example.com/',
@@ -318,6 +321,8 @@ class FullPublishFlowTest extends TestCase
     public function test_ad_set_payload_includes_campaign_id_and_budget()
     {
         config(['meta.pixel_id' => 'pixel_12345']);
+        config(['meta.page_id' => 'page_12345']); // FIX 3.3: Add page_id for LEAD_GENERATION
+        config(['meta.lead_gen_form_id' => 'form_12345']);
 
         $draft = CampaignDraft::factory()->create([
             'draft_payload_json' => [
@@ -389,6 +394,7 @@ class FullPublishFlowTest extends TestCase
     {
         config(['meta.default_account_id' => 'act_12345']);
         config(['meta.page_id' => 'page_12345']);
+        config(['meta.lead_gen_form_id' => 'form_12345']);
         config(['meta.pixel_id' => 'pixel_12345']);
 
         $template = CampaignTemplate::factory()->create([

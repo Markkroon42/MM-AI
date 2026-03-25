@@ -157,14 +157,29 @@ class MetaWriteClient
         $cleanAccountId = str_starts_with($accountId, 'act_') ? $accountId : "act_{$accountId}";
         $url = $this->buildUrl("{$cleanAccountId}/adsets");
 
-        Log::info('[META_ADSET_WRITE] Creating ad set', [
+        Log::info('[META_ADSET_WRITE] Creating ad set (pre-transform)', [
             'account_id' => $accountId,
             'campaign_id' => $payload['campaign_id'] ?? null,
             'name' => $payload['name'] ?? null,
         ]);
 
         try {
+            // Add access_token to payload
             $payload['access_token'] = $this->accessToken;
+
+            // FIX 3.2: Log exact outbound request body (sanitize access_token)
+            $sanitizedPayload = array_merge($payload, ['access_token' => '***']);
+            Log::info('[META_ADSET_WRITE] Exact outbound ad set request body', [
+                'url' => $url,
+                'payload_keys' => array_keys($payload),
+                'payload' => $sanitizedPayload,
+                'optimization_goal' => $payload['optimization_goal'] ?? null,
+                'billing_event' => $payload['billing_event'] ?? null,
+                'bid_strategy' => $payload['bid_strategy'] ?? '(not set)',
+                'bid_amount' => $payload['bid_amount'] ?? '(not set)',
+                'promoted_object' => $payload['promoted_object'] ?? '(not set)',
+                'status' => $payload['status'] ?? null,
+            ]);
 
             $response = Http::timeout($this->timeout)
                 ->post($url, $payload);

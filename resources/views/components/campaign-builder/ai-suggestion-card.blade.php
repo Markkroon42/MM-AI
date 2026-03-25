@@ -133,7 +133,7 @@
                         <div class="small text-muted fw-bold mb-1">Static Visual Ideas</div>
                         <ul class="mb-0">
                             @foreach($content['static_visual_ideas'] as $idea)
-                                <li>{{ $idea }}</li>
+                                <li>{{ is_array($idea) ? json_encode($idea) : $idea }}</li>
                             @endforeach
                         </ul>
                     </div>
@@ -144,7 +144,7 @@
                         <div class="small text-muted fw-bold mb-1">Video Concepts</div>
                         <ul class="mb-0">
                             @foreach($content['video_concepts'] as $concept)
-                                <li>{{ $concept }}</li>
+                                <li>{{ is_array($concept) ? json_encode($concept) : $concept }}</li>
                             @endforeach
                         </ul>
                     </div>
@@ -155,7 +155,7 @@
                         <div class="small text-muted fw-bold mb-1">UGC Angles</div>
                         <ul class="mb-0">
                             @foreach($content['ugc_angles'] as $angle)
-                                <li>{{ $angle }}</li>
+                                <li>{{ is_array($angle) ? json_encode($angle) : $angle }}</li>
                             @endforeach
                         </ul>
                     </div>

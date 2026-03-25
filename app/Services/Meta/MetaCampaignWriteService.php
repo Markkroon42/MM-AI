@@ -665,21 +665,93 @@ class MetaCampaignWriteService
             'targeting' => $this->buildTargeting($adSetData),
         ];
 
-        // Fix: Use LOWEST_COST_WITHOUT_CAP to avoid bid_amount requirement
-        // This is a safe default bidding strategy for first publish
-        $payload['bid_strategy'] = 'LOWEST_COST_WITHOUT_CAP';
-
         // Add budget if available
         if ($dailyBudgetCents) {
             $payload['daily_budget'] = $dailyBudgetCents;
         }
 
-        // Add promoted object for leads objective
+        // FIX 3: LEAD_GENERATION specific billing/bidding configuration
+        // For LEAD_GENERATION, omit bid_strategy to let Meta use its automatic default
+        // The combination of LEAD_GENERATION + IMPRESSIONS + explicit bid_strategy
+        // can trigger "bid_amount required" errors. By omitting bid_strategy,
+        // Meta automatically applies the correct bidding strategy for lead generation.
         if ($metaOptimizationGoal === 'LEAD_GENERATION') {
-            $payload['promoted_object'] = [
-                'pixel_id' => config('meta.pixel_id'),
-                'custom_event_type' => 'LEAD',
-            ];
+            Log::info('[META_ADSET_WRITE] LEAD_GENERATION: using Meta automatic bidding (omitting bid_strategy)', [
+                'optimization_goal' => $metaOptimizationGoal,
+                'billing_event' => $billingEvent,
+                'reason' => 'LEAD_GENERATION with automatic bidding avoids bid_amount requirement',
+            ]);
+
+            // FIX 3.2/3.3/3.4: For LEAD_GENERATION, resolve and build complete lead ad context
+            // Meta requires page_id for lead generation campaigns
+            Log::info('[META_ADSET_WRITE] LEAD_GENERATION: resolving lead ad context');
+
+            $pageId = $this->resolvePageIdForLeadGeneration($adSetData, $draft);
+
+            if (!$pageId) {
+                // FIX 3.3: Controlled failure - LEAD_GENERATION requires page_id
+                Log::error('[META_ADSET_WRITE] LEAD_GENERATION: no valid page_id found', [
+                    'reason' => 'LEAD_GENERATION publish requires a valid Meta page_id',
+                    'checked_sources' => ['ad_set_data', 'draft_payload', 'briefing', 'template', 'system_settings', 'config'],
+                ]);
+
+                throw new NonRetryablePublishException(
+                    'LEAD_GENERATION publish requires a valid page_id. ' .
+                    'Please configure meta.page_id in system settings or provide page_id in campaign configuration.'
+                );
+            }
+
+            // FIX 3.4: Build complete promoted_object for LEAD_GENERATION
+            // For on-Facebook lead ads, Meta may require additional context beyond just page_id
+            // The exact requirements depend on whether a lead form is configured
+            $leadGenFormId = $this->resolveLeadGenFormId($adSetData, $draft);
+
+            $promotedObject = ['page_id' => $pageId];
+
+            if ($leadGenFormId) {
+                // If a lead form is configured, include it
+                $promotedObject['lead_gen_form_id'] = $leadGenFormId;
+
+                Log::info('[META_ADSET_WRITE] LEAD_GENERATION: using configured lead form', [
+                    'page_id' => $pageId,
+                    'lead_gen_form_id' => $leadGenFormId,
+                    'reason' => 'Lead form ID found in configuration',
+                ]);
+            } else {
+                // No lead form configured - Meta will likely reject this
+                // This is a common case for first-time LEAD_GENERATION setup
+                Log::warning('[META_ADSET_WRITE] LEAD_GENERATION: no lead form configured', [
+                    'page_id' => $pageId,
+                    'reason' => 'LEAD_GENERATION ad sets typically require a lead form. Meta may reject this request.',
+                    'recommendation' => 'Configure a lead form ID in campaign settings or create one in Meta Business Manager',
+                ]);
+
+                // FIX 3.4: Controlled failure for missing lead form
+                throw new NonRetryablePublishException(
+                    'LEAD_GENERATION ad sets require a lead form (instant form). ' .
+                    'Please create a lead form in Meta Business Manager and configure the lead_gen_form_id in your campaign settings. ' .
+                    'Page ID found: ' . $pageId
+                );
+            }
+
+            $payload['promoted_object'] = $promotedObject;
+
+            Log::info('[META_ADSET_WRITE] LEAD_GENERATION: final promoted_object configured', [
+                'promoted_object' => $promotedObject,
+                'has_lead_form' => isset($promotedObject['lead_gen_form_id']),
+            ]);
+
+            // Explicitly do not add bid_strategy for LEAD_GENERATION
+            // Meta will use automatic bidding which is the correct default
+        } else {
+            // For other optimization goals, use LOWEST_COST_WITHOUT_CAP
+            // This is a safe default bidding strategy for first publish
+            $payload['bid_strategy'] = 'LOWEST_COST_WITHOUT_CAP';
+
+            Log::info('[META_ADSET_WRITE] Using explicit bid_strategy for non-LEAD_GENERATION', [
+                'optimization_goal' => $metaOptimizationGoal,
+                'bid_strategy' => 'LOWEST_COST_WITHOUT_CAP',
+            ]);
         }
 
         Log::info('[META_ADSET_WRITE] Mapped internal objective to Meta optimization goal', [
@@ -688,18 +760,19 @@ class MetaCampaignWriteService
         ]);
 
         // Fix: Full ad set payload logging with all relevant Meta fields
-        Log::info('[META_ADSET_WRITE] Full ad set payload prepared', [
+        Log::info('[META_ADSET_WRITE] Final ad set payload prepared', [
             'name' => $name,
             'campaign_id' => $campaignId,
             'optimization_goal' => $metaOptimizationGoal,
             'billing_event' => $billingEvent,
-            'bid_strategy' => $payload['bid_strategy'],
+            'bid_strategy' => $payload['bid_strategy'] ?? '(auto)',
             'bid_amount' => $payload['bid_amount'] ?? null,
             'daily_budget_cents' => $dailyBudgetCents,
             'status' => $payload['status'],
             'has_promoted_object' => isset($payload['promoted_object']),
             'promoted_object' => $payload['promoted_object'] ?? null,
             'targeting_countries' => $payload['targeting']['geo_locations']['countries'] ?? null,
+            'uses_automatic_bidding' => !isset($payload['bid_strategy']),
         ]);
 
         return $payload;
@@ -916,6 +989,176 @@ class MetaCampaignWriteService
         ]);
 
         return $response;
+    }
+
+    /**
+     * FIX 3.3: Resolve page_id for LEAD_GENERATION campaigns
+     * Tries multiple sources in priority order:
+     * 1. Ad set data
+     * 2. Draft payload (campaign level)
+     * 3. Briefing
+     * 4. Template
+     * 5. System settings
+     * 6. Config/env
+     */
+    protected function resolvePageIdForLeadGeneration(array $adSetData, CampaignDraft $draft): ?string
+    {
+        $sources = [];
+
+        // 1. Check ad set data
+        if (!empty($adSetData['page_id'])) {
+            Log::info('[META_ADSET_WRITE] Resolved page_id from ad_set_data', [
+                'page_id' => $adSetData['page_id'],
+                'source' => 'ad_set_data',
+            ]);
+            return $adSetData['page_id'];
+        }
+        $sources[] = 'ad_set_data (not found)';
+
+        // 2. Check draft payload (campaign level)
+        $draftPayload = $draft->draft_payload_json;
+        if (!empty($draftPayload['campaign']['page_id'])) {
+            Log::info('[META_ADSET_WRITE] Resolved page_id from draft_payload', [
+                'page_id' => $draftPayload['campaign']['page_id'],
+                'source' => 'draft_payload.campaign',
+            ]);
+            return $draftPayload['campaign']['page_id'];
+        }
+        $sources[] = 'draft_payload.campaign (not found)';
+
+        // 3. Check briefing
+        if ($draft->briefing && !empty($draft->briefing->meta_page_id)) {
+            Log::info('[META_ADSET_WRITE] Resolved page_id from briefing', [
+                'page_id' => $draft->briefing->meta_page_id,
+                'source' => 'briefing.meta_page_id',
+            ]);
+            return $draft->briefing->meta_page_id;
+        }
+        $sources[] = 'briefing.meta_page_id (not found)';
+
+        // 4. Check template
+        if ($draft->template && !empty($draft->template->meta_page_id)) {
+            Log::info('[META_ADSET_WRITE] Resolved page_id from template', [
+                'page_id' => $draft->template->meta_page_id,
+                'source' => 'template.meta_page_id',
+            ]);
+            return $draft->template->meta_page_id;
+        }
+        $sources[] = 'template.meta_page_id (not found)';
+
+        // 5. Check system settings
+        $systemPageId = SystemSetting::get('meta', 'default_page_id');
+        if (!empty($systemPageId)) {
+            Log::info('[META_ADSET_WRITE] Resolved page_id from system_settings', [
+                'page_id' => $systemPageId,
+                'source' => 'system_settings.meta.default_page_id',
+            ]);
+            return $systemPageId;
+        }
+        $sources[] = 'system_settings.meta.default_page_id (not found)';
+
+        // 6. Check config/env
+        $configPageId = config('meta.page_id');
+        if (!empty($configPageId)) {
+            Log::info('[META_ADSET_WRITE] Resolved page_id from config', [
+                'page_id' => $configPageId,
+                'source' => 'config.meta.page_id',
+            ]);
+            return $configPageId;
+        }
+        $sources[] = 'config.meta.page_id (not found)';
+
+        // No valid page_id found
+        Log::warning('[META_ADSET_WRITE] No page_id found in any source', [
+            'checked_sources' => $sources,
+        ]);
+
+        return null;
+    }
+
+    /**
+     * FIX 3.4: Resolve lead_gen_form_id for LEAD_GENERATION campaigns
+     * Tries multiple sources in priority order:
+     * 1. Ad set data
+     * 2. Draft payload (campaign level)
+     * 3. Briefing
+     * 4. Template
+     * 5. System settings
+     * 6. Config/env
+     */
+    protected function resolveLeadGenFormId(array $adSetData, CampaignDraft $draft): ?string
+    {
+        $sources = [];
+
+        // 1. Check ad set data
+        if (!empty($adSetData['lead_gen_form_id'])) {
+            Log::info('[META_ADSET_WRITE] Resolved lead_gen_form_id from ad_set_data', [
+                'lead_gen_form_id' => $adSetData['lead_gen_form_id'],
+                'source' => 'ad_set_data',
+            ]);
+            return $adSetData['lead_gen_form_id'];
+        }
+        $sources[] = 'ad_set_data (not found)';
+
+        // 2. Check draft payload (campaign level)
+        $draftPayload = $draft->draft_payload_json;
+        if (!empty($draftPayload['campaign']['lead_gen_form_id'])) {
+            Log::info('[META_ADSET_WRITE] Resolved lead_gen_form_id from draft_payload', [
+                'lead_gen_form_id' => $draftPayload['campaign']['lead_gen_form_id'],
+                'source' => 'draft_payload.campaign',
+            ]);
+            return $draftPayload['campaign']['lead_gen_form_id'];
+        }
+        $sources[] = 'draft_payload.campaign (not found)';
+
+        // 3. Check briefing
+        if ($draft->briefing && !empty($draft->briefing->meta_lead_gen_form_id)) {
+            Log::info('[META_ADSET_WRITE] Resolved lead_gen_form_id from briefing', [
+                'lead_gen_form_id' => $draft->briefing->meta_lead_gen_form_id,
+                'source' => 'briefing.meta_lead_gen_form_id',
+            ]);
+            return $draft->briefing->meta_lead_gen_form_id;
+        }
+        $sources[] = 'briefing.meta_lead_gen_form_id (not found)';
+
+        // 4. Check template
+        if ($draft->template && !empty($draft->template->meta_lead_gen_form_id)) {
+            Log::info('[META_ADSET_WRITE] Resolved lead_gen_form_id from template', [
+                'lead_gen_form_id' => $draft->template->meta_lead_gen_form_id,
+                'source' => 'template.meta_lead_gen_form_id',
+            ]);
+            return $draft->template->meta_lead_gen_form_id;
+        }
+        $sources[] = 'template.meta_lead_gen_form_id (not found)';
+
+        // 5. Check system settings
+        $systemLeadFormId = SystemSetting::get('meta', 'default_lead_gen_form_id');
+        if (!empty($systemLeadFormId)) {
+            Log::info('[META_ADSET_WRITE] Resolved lead_gen_form_id from system_settings', [
+                'lead_gen_form_id' => $systemLeadFormId,
+                'source' => 'system_settings.meta.default_lead_gen_form_id',
+            ]);
+            return $systemLeadFormId;
+        }
+        $sources[] = 'system_settings.meta.default_lead_gen_form_id (not found)';
+
+        // 6. Check config/env
+        $configLeadFormId = config('meta.lead_gen_form_id');
+        if (!empty($configLeadFormId)) {
+            Log::info('[META_ADSET_WRITE] Resolved lead_gen_form_id from config', [
+                'lead_gen_form_id' => $configLeadFormId,
+                'source' => 'config.meta.lead_gen_form_id',
+            ]);
+            return $configLeadFormId;
+        }
+        $sources[] = 'config.meta.lead_gen_form_id (not found)';
+
+        // No valid lead_gen_form_id found
+        Log::warning('[META_ADSET_WRITE] No lead_gen_form_id found in any source', [
+            'checked_sources' => $sources,
+        ]);
+
+        return null;
     }
 }
 
